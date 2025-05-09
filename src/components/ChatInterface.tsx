@@ -15,7 +15,7 @@ const ChatInterface: React.FC = () => {
       <div className="bg-chat-purple text-white p-4">
         <h2 className="font-bold">P2P Chat</h2>
         <div className="text-sm opacity-80">
-          Welcome, {nickname}! {' '}
+          Connected as <span className="font-semibold">{nickname}</span> {' '}
           <span className="inline-flex items-center">
             <span className="relative flex h-2 w-2 mr-2">
               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${

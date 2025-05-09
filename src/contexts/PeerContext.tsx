@@ -15,6 +15,11 @@ interface Connection {
   conn: any; // PeerJS connection
 }
 
+// Global nickname to peerId mapping
+interface NicknameRegistry {
+  [nickname: string]: string; // nickname -> peerId
+}
+
 interface PeerContextType {
   peer: Peer | null;
   myPeerId: string;
@@ -23,11 +28,14 @@ interface PeerContextType {
   messages: Message[];
   isInitialized: boolean;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  nicknameRegistry: NicknameRegistry;
   setNickname: (name: string) => void;
   initializePeer: () => void;
-  connectToPeer: (remotePeerId: string) => void;
+  connectToPeer: (remotePeerIdOrNickname: string) => void;
   sendMessage: (content: string) => void;
   disconnectFromPeer: (peerId: string) => void;
+  registerNickname: (nickname: string, peerId: string) => void;
+  lookupPeerId: (nickname: string) => string | undefined;
 }
 
 const PeerContext = createContext<PeerContextType | undefined>(undefined);
@@ -52,6 +60,18 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [nicknameRegistry, setNicknameRegistry] = useState<NicknameRegistry>({});
+
+  const registerNickname = (userNickname: string, peerId: string) => {
+    setNicknameRegistry(prev => ({
+      ...prev,
+      [userNickname]: peerId
+    }));
+  };
+
+  const lookupPeerId = (userNickname: string): string | undefined => {
+    return nicknameRegistry[userNickname];
+  };
 
   const initializePeer = () => {
     if (peer || !nickname) return;
@@ -64,6 +84,8 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
       newPeer.on('open', (id) => {
         console.log('My peer ID is: ' + id);
         setMyPeerId(id);
+        // Register my own nickname and ID
+        registerNickname(nickname, id);
         setIsInitialized(true);
         setConnectionStatus('connected');
       });
@@ -87,7 +109,11 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
   const handleConnection = (conn: any) => {
     conn.on('open', () => {
       // Exchange nicknames
-      conn.send({ type: 'nickname', nickname });
+      conn.send({ 
+        type: 'nickname', 
+        nickname,
+        nicknameRegistry: nicknameRegistry // Send our registry to the other peer
+      });
 
       conn.on('data', (data: any) => {
         if (data.type === 'nickname') {
@@ -98,11 +124,33 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
             conn
           }]);
           
+          // Update our registry with their registry
+          if (data.nicknameRegistry) {
+            setNicknameRegistry(prev => ({
+              ...prev,
+              ...data.nicknameRegistry
+            }));
+          }
+          
+          // Register the new peer's nickname
+          registerNickname(data.nickname, conn.peer);
+          
           // Confirm nickname reception
-          conn.send({ type: 'nickname-received' });
+          conn.send({ 
+            type: 'nickname-received',
+            nicknameRegistry: nicknameRegistry // Send our updated registry
+          });
         } else if (data.type === 'nickname-received') {
           // Connection is fully established
           console.log(`Connection with ${conn.peer} established`);
+          
+          // Update our registry with their registry
+          if (data.nicknameRegistry) {
+            setNicknameRegistry(prev => ({
+              ...prev,
+              ...data.nicknameRegistry
+            }));
+          }
         } else if (data.type === 'message') {
           // Handle incoming message
           const newMessage: Message = {
@@ -122,11 +170,26 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
     });
   };
 
-  const connectToPeer = (remotePeerId: string) => {
-    if (!peer || !remotePeerId) return;
+  const connectToPeer = (remotePeerIdOrNickname: string) => {
+    if (!peer || !remotePeerIdOrNickname) return;
 
     try {
-      const conn = peer.connect(remotePeerId);
+      // First check if this is a nickname in our registry
+      const peerId = lookupPeerId(remotePeerIdOrNickname) || remotePeerIdOrNickname;
+      
+      // Don't connect to ourselves
+      if (peerId === myPeerId) {
+        console.error("Cannot connect to yourself");
+        return;
+      }
+      
+      // Check if we're already connected to this peer
+      if (connections.some(c => c.peerId === peerId)) {
+        console.log("Already connected to this peer");
+        return;
+      }
+      
+      const conn = peer.connect(peerId);
       handleConnection(conn);
     } catch (error) {
       console.error('Failed to connect to peer:', error);
@@ -184,11 +247,14 @@ export const PeerProvider: React.FC<PeerProviderProps> = ({ children }) => {
         messages,
         isInitialized,
         connectionStatus,
+        nicknameRegistry,
         setNickname,
         initializePeer,
         connectToPeer,
         sendMessage,
-        disconnectFromPeer
+        disconnectFromPeer,
+        registerNickname,
+        lookupPeerId
       }}
     >
       {children}
